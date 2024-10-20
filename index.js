@@ -1,6 +1,9 @@
-const puppeteer = require('puppeteer');
 const fs = require('fs');
+const path = require('path');
 const winston = require('winston');
+const puppeteer = require('puppeteer');
+
+const SAVED_CHAPTERS = path.join(__dirname, 'chapters.json');
 
 // Настройка логировщика
 const logger = winston.createLogger({
@@ -19,7 +22,7 @@ const logger = winston.createLogger({
 
 
 async function saveChaptersToFile(chapters) {
-    fs.writeFileSync('chapters.json', JSON.stringify(chapters, null, 2), 'utf-8');
+    fs.writeFileSync(SAVED_CHAPTERS, JSON.stringify(chapters, null, 2), 'utf-8');
 }
 
 async function readConfig() {
@@ -139,23 +142,35 @@ async function getChapters(page, mangaLink) {
     logger.info('Ссылки на главы: ' + chaptersArray.map(chapter => `${chapter.link}: ${chapter.title}`).join(', '));
 
     // Сохранение в chapters.json
-    fs.writeFileSync('chapters.json', JSON.stringify(chaptersArray, null, 2));
+    fs.writeFileSync(SAVED_CHAPTERS, JSON.stringify(chaptersArray, null, 2));
 
     return chaptersArray; // Возвращаем массив глав
 }
 
-
 async function main() {
     const { username, password, mangaLink } = await readConfig();
-    
     const browser = await puppeteer.launch({ headless: false });
     const page = await browser.newPage();
     
     await login(page, username, password);
-    await getChapters(page, mangaLink);
+    
+    let chapters;
+    if (fs.existsSync(SAVED_CHAPTERS)) {
+        logger.info('Файл chapters.json найден, загружаем главы из файла...');
+        const data = fs.readFileSync(SAVED_CHAPTERS, 'utf-8');
+        chapters = JSON.parse(data);
+    } else {
+        logger.info('Файл chapters.json не найден, извлекаем главы...');
+        chapters = await getChapters(page, mangaLink);
+    }
+    
+
+    // Логика для работы с главами (например, вывод в лог или другое)
+    logger.info('Готовые главы: ' + JSON.stringify(chapters));
 
     await browser.close();
 }
+
 
 main().catch(error => {
     logger.error('Ошибка: ' + error.message);
