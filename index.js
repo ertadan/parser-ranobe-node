@@ -17,6 +17,11 @@ const logger = winston.createLogger({
     ],
 });
 
+
+async function saveChaptersToFile(chapters) {
+    fs.writeFileSync('chapters.json', JSON.stringify(chapters, null, 2), 'utf-8');
+}
+
 async function readConfig() {
     const config = JSON.parse(fs.readFileSync('config.json', 'utf-8'));
     return {
@@ -52,10 +57,8 @@ async function login(page, username, password) {
 async function handlePopup(page) {
     logger.info('Обработка всплывающего окна...');
     try {
-        // Ждем, пока всплывающее окно станет видимым
         await page.waitForSelector('body > div.popup-root > div:nth-child(2) > div.popup__inner > div > div.popup-header > div', { visible: true, timeout: 15000 });
 
-        // Проверяем текст в заголовке
         const headerText = await page.evaluate(() => {
             const header = document.querySelector('body > div.popup-root > div:nth-child(2) > div.popup__inner > div > div.popup-header > div');
             return header ? header.textContent : null;
@@ -64,16 +67,11 @@ async function handlePopup(page) {
         if (headerText === 'Внимание') {
             logger.info('Найдено всплывающее окно с заголовком: ' + headerText);
 
-            // Устанавливаем чекбокс о контенте для взрослых
             await page.click('body > div.popup-root > div:nth-child(2) > div.popup__inner > div > div.popup-body > div.form-group._offset > label > input');
             logger.info("Чекбокс о контенте для взрослых установлен");
 
-            // Нажимаем на кнопку "Мне есть 18+"
             await page.click('body > div.popup-root > div:nth-child(2) > div.popup__inner > div > div.popup-body > div.flex.btns._stretch > button.btn.is-filled.variant-primary.size-lg');
             logger.info('Нажата кнопка "Мне есть 18+"');
-
-            // Ждем навигации после нажатия кнопки
-            await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 });
 
             logger.info('Всплывающее окно обработано!');
         } else {
@@ -84,23 +82,68 @@ async function handlePopup(page) {
     }
 }
 
-
 async function getChapters(page, mangaLink) {
     logger.info('Извлечение глав...');
-    
     const chaptersUrl = `${mangaLink}?section=chapters`;
     await page.goto(chaptersUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
     await handlePopup(page); // Обработка всплывающего окна
 
-    const chapters = await page.evaluate(() => {
-        const chapterElements = document.querySelectorAll('.chapter-link'); // Замените на правильный селектор
-        return Array.from(chapterElements).map(element => element.href);
-    });
+    const chapters = {};
+    const scrollPauseTime = 2000; // Увеличьте время ожидания после прокрутки
+    const scrollIncrement = 350; // Увеличение прокрутки
 
-    logger.info('Ссылки на главы: ' + chapters.join(', '));
-    return chapters;
+    let currentHeight = 0;
+    let scrollHeight = await page.evaluate('document.body.scrollHeight');
+
+    // Проверка элементов сразу после обработки окна
+    await new Promise(resolve => setTimeout(resolve, 2000)); // Подождите 2 секунды
+    const itemCount = await page.evaluate(() => document.querySelectorAll('.zx_a9').length);
+    logger.info(`Количество элементов с классом '.zx_a9': ${itemCount}`);
+
+    while (currentHeight < scrollHeight) {
+        // Прокрутка вниз
+        await page.evaluate(scrollIncrement => {
+            window.scrollBy(0, scrollIncrement);
+        }, scrollIncrement);
+
+        // Ожидание загрузки новых элементов
+        await new Promise(resolve => setTimeout(resolve, scrollPauseTime));
+
+        // Сбор глав
+        const newChapters = await page.evaluate(() => {
+            const items = Array.from(document.querySelectorAll('.vue-recycle-scroller__item-view a'));
+            return items.map(item => ({
+                title: item.textContent,
+                link: item.href
+            }));
+        });
+
+        logger.info('Новые главы: ' + JSON.stringify(newChapters)); // Отладочный лог
+
+        newChapters.forEach(chapter => {
+            if (chapter.title && !chapters[chapter.title]) {
+                logger.info(`Добавление главы: ${chapter.title}`);
+                logger.info(`Добавление ссылки: ${chapter.link}`);
+                chapters[chapter.title] = chapter.link; // Добавляем главу в объект
+            }
+        });
+
+        // Проверка высоты страницы после прокрутки
+        scrollHeight = await page.evaluate('document.body.scrollHeight');
+        currentHeight += scrollIncrement; // Обновляем текущую высоту
+    }
+
+    const chaptersArray = Object.entries(chapters).map(([title, link]) => ({ title, link }));
+
+    logger.info('Ссылки на главы: ' + chaptersArray.map(chapter => `${chapter.link}: ${chapter.title}`).join(', '));
+
+    // Сохранение в chapters.json
+    fs.writeFileSync('chapters.json', JSON.stringify(chaptersArray, null, 2));
+
+    return chaptersArray; // Возвращаем массив глав
 }
+
 
 async function main() {
     const { username, password, mangaLink } = await readConfig();
