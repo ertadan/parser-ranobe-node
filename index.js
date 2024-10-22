@@ -4,6 +4,7 @@ const winston = require('winston');
 const puppeteer = require('puppeteer');
 
 const SAVED_CHAPTERS = path.join(__dirname, 'chapters.json');
+const DOWNLOADS_DIR = path.join(__dirname, 'downloads');
 const POPUP_SELECTORS = {
     indexPage: {
         header: 'body > div.popup-root > div:nth-child(2) > div.popup__inner > div > div.popup-header > div',
@@ -186,11 +187,9 @@ async function saveChapters(page, chapters) {
         await handlePopup(page, POPUP_SELECTORS.readerPage);
 
         // Создание папки для сохранения изображений
-        // TODO: save all files into downloads/ folder
-        // TODO: chapter.title must be trimmed from spaces!
-        const chapterDir = path.join(__dirname, chapter.title);
+        const chapterDir = path.join(DOWNLOADS_DIR, chapter.title.trim());
         if (!fs.existsSync(chapterDir)) {
-            fs.mkdirSync(chapterDir);
+            fs.mkdirSync(chapterDir,{recursive:true});
             logger.info(`Создана папка для главы: ${chapterDir}`);
         }
 
