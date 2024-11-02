@@ -221,47 +221,37 @@ async function saveChapters(page, chapters) {
             continue;
         }
 
-        // Список страниц, которые не удалось загрузить
         let failedPages = [];
 
-        async function savePageImage(pageNumber) {
-            const pageUrl = `${baseUrl}&p=${pageNumber}`;
+        async function savePageImage(expectedPageNumber) {
+            const pageUrl = expectedPageNumber === 1 ? `${baseUrl}`:`${baseUrl}&p=${expectedPageNumber}`;
             await page.goto(pageUrl, { waitUntil: 'networkidle2' });
-
-            try {
-                await page.waitForSelector('.yj_kw.yj_kx', { timeout: 5000 });
-                await new Promise(resolve => setTimeout(resolve, 500));
-
-                const imageUrl = await page.evaluate(() => {
-                    const imgElement = document.querySelector('.yj_kw.yj_kx');
-                    return imgElement ? imgElement.src : null;
-                });
-
-                if (!imageUrl) {
-                    logger.info(`Не удалось найти изображение для страницы ${pageNumber}. Пропускаем.`);
-                    failedPages.push(pageNumber);
-                    return;
-                }
-
-                logger.info(`Найдено изображение для страницы ${pageNumber}: ${imageUrl}`);
-
-                const viewSource = await page.goto(imageUrl, { waitUntil: 'networkidle2' });
-                const imagePath = path.join(chapterDir, `${pageNumber}.jpg`);
-                fs.writeFileSync(imagePath, await viewSource.buffer());
-
-                logger.info(`Изображение сохранено: ${imagePath}`);
-            } catch (error) {
-                logger.error(`Ошибка при загрузке изображения для страницы ${pageNumber}: ${error.message}`);
-                failedPages.push(pageNumber);
+            // await page.waitForSelector(`.sf_cx`, { timeout: 6000 });
+            
+            const imageUrl = await page.evaluate((expectedPageNumber) => {
+                const mainContainer = document.querySelector('.sf_cx');
+                const pageContainer = mainContainer ? mainContainer.querySelector(`.yj_bz[data-page="${expectedPageNumber}"]`) : null;
+                const imgElement = pageContainer ? pageContainer.querySelector('.yj_kw.yj_kx') : null;
+                return imgElement ? imgElement.src : null;
+            }, expectedPageNumber);
+        
+            if (!imageUrl) {
+                logger.info(`Не удалось найти изображение для страницы ${expectedPageNumber}. Пропускаем.`);
+                failedPages.push(expectedPageNumber);
+                return;
             }
+        
+            const viewSource = await page.goto(imageUrl, { waitUntil: 'networkidle2' });
+            const imagePath = path.join(chapterDir, `${expectedPageNumber}.jpg`);
+            fs.writeFileSync(imagePath, await viewSource.buffer());
+        
+            logger.info(`Изображение сохранено: ${imagePath}`);
         }
 
-        // Первая попытка загрузить все страницы
         for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
             await savePageImage(pageNumber);
         }
 
-        // Повторные попытки для неудачных загрузок
         if (failedPages.length > 0) {
             logger.info(`Повторная попытка для страниц: ${failedPages.join(', ')}`);
             for (const pageNumber of failedPages) {
@@ -269,7 +259,6 @@ async function saveChapters(page, chapters) {
             }
         }
 
-        // Если после повторных попыток остались неудачные страницы
         if (failedPages.length > 0) {
             logger.warn(`Следующие страницы не удалось сохранить после повторных попыток: ${failedPages.join(', ')}`);
         }
