@@ -181,9 +181,9 @@ async function getChapters(page, mangaLink) {
 async function saveChapters(page, chapters) {
     let popupHandled = false;
 
-    for (const [index, chapter] of chapters.entries()) {
+    for (const chapter of chapters) {
         logger.info('Сохраняем главу... ' + chapter.title);
-        
+
         const baseUrl = chapter.link;
         const chapterDir = path.join(DOWNLOADS_DIR, chapter.title.trim());
 
@@ -192,17 +192,19 @@ async function saveChapters(page, chapters) {
             logger.info(`Создана папка для главы: ${chapterDir}`);
         }
 
-        // Переходим к первой странице и определяем общее количество страниц
         await page.goto(baseUrl, { waitUntil: 'networkidle2' });
-        
+
         if (!popupHandled) {
             await handlePopup(page, POPUP_SELECTORS.readerPage);
             popupHandled = true;
         }
 
-        // Ожидаем элемент с изображением и добавляем небольшую паузу
-        await page.waitForSelector('.yj_kw.yj_kx', { timeout: 10000 });
-        await new Promise(resolve => setTimeout(resolve, 1000)); // пауза 1 секунда
+        try {
+            await page.waitForSelector('.form-input__field', { timeout: 10000 });
+        } catch (error) {
+            logger.error(`Не удалось получить количество страниц для главы "${chapter.title}" из-за тайм-аута.`);
+            continue;
+        }
 
         const totalPages = await page.evaluate(() => {
             const pageInfoElement = document.querySelector('.form-input__field');
@@ -219,27 +221,30 @@ async function saveChapters(page, chapters) {
             continue;
         }
 
-        for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
+        // Список страниц, которые не удалось загрузить
+        let failedPages = [];
+
+        async function savePageImage(pageNumber) {
             const pageUrl = `${baseUrl}&p=${pageNumber}`;
             await page.goto(pageUrl, { waitUntil: 'networkidle2' });
 
-            // Ждем появления изображения и добавляем паузу после каждой загрузки страницы
-            await page.waitForSelector('.yj_kw.yj_kx', { timeout: 10000 });
-            await new Promise(resolve => setTimeout(resolve, 500)); // пауза 0.5 секунды
-
-            const imageUrl = await page.evaluate(() => {
-                const imgElement = document.querySelector('.yj_kw.yj_kx');
-                return imgElement ? imgElement.src : null;
-            });
-
-            if (!imageUrl) {
-                logger.info(`Не удалось найти изображение для страницы ${pageNumber}. Пропускаем.`);
-                continue;
-            }
-
-            logger.info(`Найдено изображение для страницы ${pageNumber}: ${imageUrl}`);
-
             try {
+                await page.waitForSelector('.yj_kw.yj_kx', { timeout: 5000 });
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+                const imageUrl = await page.evaluate(() => {
+                    const imgElement = document.querySelector('.yj_kw.yj_kx');
+                    return imgElement ? imgElement.src : null;
+                });
+
+                if (!imageUrl) {
+                    logger.info(`Не удалось найти изображение для страницы ${pageNumber}. Пропускаем.`);
+                    failedPages.push(pageNumber);
+                    return;
+                }
+
+                logger.info(`Найдено изображение для страницы ${pageNumber}: ${imageUrl}`);
+
                 const viewSource = await page.goto(imageUrl, { waitUntil: 'networkidle2' });
                 const imagePath = path.join(chapterDir, `${pageNumber}.jpg`);
                 fs.writeFileSync(imagePath, await viewSource.buffer());
@@ -247,11 +252,30 @@ async function saveChapters(page, chapters) {
                 logger.info(`Изображение сохранено: ${imagePath}`);
             } catch (error) {
                 logger.error(`Ошибка при загрузке изображения для страницы ${pageNumber}: ${error.message}`);
-                continue;
+                failedPages.push(pageNumber);
             }
+        }
+
+        // Первая попытка загрузить все страницы
+        for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
+            await savePageImage(pageNumber);
+        }
+
+        // Повторные попытки для неудачных загрузок
+        if (failedPages.length > 0) {
+            logger.info(`Повторная попытка для страниц: ${failedPages.join(', ')}`);
+            for (const pageNumber of failedPages) {
+                await savePageImage(pageNumber);
+            }
+        }
+
+        // Если после повторных попыток остались неудачные страницы
+        if (failedPages.length > 0) {
+            logger.warn(`Следующие страницы не удалось сохранить после повторных попыток: ${failedPages.join(', ')}`);
         }
     }
 }
+
 
 
 async function main() {
