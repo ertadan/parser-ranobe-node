@@ -179,56 +179,77 @@ async function getChapters(page, mangaLink) {
 }
 
 async function saveChapters(page, chapters) {
-    for (const chapter of chapters) {
+    let popupHandled = false;
+
+    for (const [index, chapter] of chapters.entries()) {
         logger.info('Сохраняем главу... ' + chapter.title);
-        await page.goto(chapter.link, { waitUntil: 'networkidle2' });
-
-        // Обработка всплывающего окна (если оно есть)
-        await handlePopup(page, POPUP_SELECTORS.readerPage);
-
-        // Создание папки для сохранения изображений
+        
+        const baseUrl = chapter.link;
         const chapterDir = path.join(DOWNLOADS_DIR, chapter.title.trim());
+
         if (!fs.existsSync(chapterDir)) {
-            fs.mkdirSync(chapterDir,{recursive:true});
+            fs.mkdirSync(chapterDir, { recursive: true });
             logger.info(`Создана папка для главы: ${chapterDir}`);
         }
 
-        // Получение URL изображения
-        const imageUrl = await page.evaluate(() => {
-            const imgElement = document.querySelector('.yj_kw.yj_kx');
-            return imgElement ? imgElement.src : null;
-        });
-
-        if (!imageUrl) {
-            logger.info(`Не удалось найти изображение для главы "${chapter.title}".`);
-            continue; // Переходим к следующей главе, если изображения нет
+        // Переходим к первой странице и определяем общее количество страниц
+        await page.goto(baseUrl, { waitUntil: 'networkidle2' });
+        
+        if (!popupHandled) {
+            await handlePopup(page, POPUP_SELECTORS.readerPage);
+            popupHandled = true;
         }
 
-        logger.info(`Найдено изображение для главы "${chapter.title}": ${imageUrl}`);
+        // Ожидаем элемент с изображением и добавляем небольшую паузу
+        await page.waitForSelector('.yj_kw.yj_kx', { timeout: 10000 });
+        await new Promise(resolve => setTimeout(resolve, 1000)); // пауза 1 секунда
 
-        // Загрузка изображения
-        try {
-            // TODO: work with pagination because we save only the first image in chapter
-            const viewSource = await page.goto(imageUrl, { waitUntil: 'networkidle2' });
-
-            const imagePath = path.join(chapterDir, 'image.jpg'); // Сохраняем с именем image.png
-            fs.writeFileSync(imagePath, await viewSource.buffer()); // Сохраняем изображение
-
-            logger.info(`Изображение сохранено: ${imagePath}`);
-        } catch (error) {
-            logger.error(`Ошибка при загрузке изображения для главы "${chapter.title}": ${error.message}`);
-            continue; // Переходим к следующей главе в случае ошибки
-        }
-
-        // Клик по изображению для перехода к следующей части
-        // TODO: change this logic because we move backwards!
-        await page.evaluate(() => {
-            const imgElement = document.querySelector('.yj_kw.yj_kx');
-            if (imgElement) {
-                imgElement.click();
+        const totalPages = await page.evaluate(() => {
+            const pageInfoElement = document.querySelector('.form-input__field');
+            if (pageInfoElement) {
+                const textContent = pageInfoElement.textContent;
+                const match = textContent.match(/Страница \d+ \/ (\d+)/);
+                return match ? parseInt(match[1], 10) : null;
             }
+            return null;
         });
 
+        if (totalPages === null) {
+            logger.error(`Не удалось получить количество страниц для главы "${chapter.title}".`);
+            continue;
+        }
+
+        for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
+            const pageUrl = `${baseUrl}&p=${pageNumber}`;
+            await page.goto(pageUrl, { waitUntil: 'networkidle2' });
+
+            // Ждем появления изображения и добавляем паузу после каждой загрузки страницы
+            await page.waitForSelector('.yj_kw.yj_kx', { timeout: 10000 });
+            await new Promise(resolve => setTimeout(resolve, 500)); // пауза 0.5 секунды
+
+            const imageUrl = await page.evaluate(() => {
+                const imgElement = document.querySelector('.yj_kw.yj_kx');
+                return imgElement ? imgElement.src : null;
+            });
+
+            if (!imageUrl) {
+                logger.info(`Не удалось найти изображение для страницы ${pageNumber}. Пропускаем.`);
+                continue;
+            }
+
+            logger.info(`Найдено изображение для страницы ${pageNumber}: ${imageUrl}`);
+
+            try {
+                const viewSource = await page.goto(imageUrl, { waitUntil: 'networkidle2' });
+                const imagePath = path.join(chapterDir, `${pageNumber}.jpg`);
+                fs.writeFileSync(imagePath, await viewSource.buffer());
+
+                logger.info(`Изображение сохранено: ${imagePath}`);
+            } catch (error) {
+                logger.error(`Ошибка при загрузке изображения для страницы ${pageNumber}: ${error.message}`);
+                continue;
+            }
+        }
     }
 }
 
