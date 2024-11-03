@@ -225,27 +225,37 @@ async function saveChapters(page, chapters) {
 
         async function savePageImage(expectedPageNumber) {
             const pageUrl = expectedPageNumber === 1 ? `${baseUrl}`:`${baseUrl}&p=${expectedPageNumber}`;
-            await page.goto(pageUrl, { waitUntil: 'networkidle2' });
-            // await page.waitForSelector(`.sf_cx`, { timeout: 6000 });
+            try {
+                await page.goto(pageUrl, { waitUntil: 'networkidle2' });
+                await page.waitForSelector(`.sf_cx`, { timeout: 15000 });
+                
+                const imageUrl = await page.evaluate((expectedPageNumber) => {
+                    const mainContainer = document.querySelector('.sf_cx');
+                    const pageContainer = mainContainer ? mainContainer.querySelector(`.yj_bz[data-page="${expectedPageNumber}"]`) : null;
+                    const imgElement = pageContainer ? pageContainer.querySelector('.yj_kw.yj_kx') : null;
+                    return imgElement ? imgElement.src : null;
+                }, expectedPageNumber);
             
-            const imageUrl = await page.evaluate((expectedPageNumber) => {
-                const mainContainer = document.querySelector('.sf_cx');
-                const pageContainer = mainContainer ? mainContainer.querySelector(`.yj_bz[data-page="${expectedPageNumber}"]`) : null;
-                const imgElement = pageContainer ? pageContainer.querySelector('.yj_kw.yj_kx') : null;
-                return imgElement ? imgElement.src : null;
-            }, expectedPageNumber);
-        
-            if (!imageUrl) {
-                logger.info(`Не удалось найти изображение для страницы ${expectedPageNumber}. Пропускаем.`);
-                failedPages.push(expectedPageNumber);
-                return;
+                if (!imageUrl) {
+                    logger.info(`Не удалось найти изображение для страницы ${expectedPageNumber}. Пропускаем.`);
+                    failedPages.push(expectedPageNumber);
+                    return;
+                }
+            
+                const viewSource = await page.goto(imageUrl, { waitUntil: 'networkidle2' });
+                const imagePath = path.join(chapterDir, `${expectedPageNumber}.jpg`);
+                fs.writeFileSync(imagePath, await viewSource.buffer());
+            
+                logger.info(`Изображение сохранено: ${imagePath}`);
+                const pageIndex = failedPages.indexOf(expectedPageNumber);
+                if (pageIndex > -1) {
+                    failedPages.splice(pageIndex, 1);
+                }
             }
-        
-            const viewSource = await page.goto(imageUrl, { waitUntil: 'networkidle2' });
-            const imagePath = path.join(chapterDir, `${expectedPageNumber}.jpg`);
-            fs.writeFileSync(imagePath, await viewSource.buffer());
-        
-            logger.info(`Изображение сохранено: ${imagePath}`);
+            catch (error) {
+                logger.error('Не удалось сохранить страницу: ' + error.message);
+                failedPages.push(expectedPageNumber);
+            }
         }
 
         for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
